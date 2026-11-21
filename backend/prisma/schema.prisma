@@ -1,0 +1,261 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  UNIVERSITY
+  STUDENT
+  RECRUITER
+  ADMIN
+}
+
+enum CredentialStatus {
+  PENDING
+  ACTIVE
+  REVOKED
+  FAILED
+  DUPLICATE_LINKED
+  NEEDS_REVIEW
+  REJECTED
+  QUARANTINED
+}
+
+model User {
+  id              String           @id @default(uuid())
+  fullName        String
+  email           String           @unique
+  passwordHash    String
+  role            Role
+  walletAddress   String?          @unique
+  isActive        Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  institution     Institution?
+  student         Student?
+  verificationLogs VerificationLog[]
+  auditLogs       AuditLog[]
+
+  @@index([email])
+  @@index([walletAddress])
+}
+
+model Institution {
+  id                      String           @id @default(uuid())
+  userId                  String           @unique
+  institutionName         String
+  institutionCode         String           @unique
+  officialEmail           String
+  website                 String
+  country                 String           @default("India")
+  walletAddress           String           @unique
+  blockchainRegistered    Boolean          @default(false)
+  registrationTxHash      String?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  user                    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  students                Student[]
+  academicRecords         AcademicRecord[]
+  credentials             Credential[]
+  uploadBatches           UploadBatch[]
+  duplicateGroups         DuplicateGroup[]
+
+  @@index([institutionCode])
+  @@index([walletAddress])
+}
+
+model Student {
+  id              String           @id @default(uuid())
+  userId          String?          @unique
+  institutionId   String
+  studentNumber   String           // Enrollment number
+  fullName        String
+  normalizedName  String
+  email           String
+  department      String
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  deletedAt       DateTime?        // Non-destructive soft-deletion
+
+  user            User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  institution     Institution      @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  academicRecords AcademicRecord[]
+  credentials     Credential[]
+
+  @@unique([institutionId, studentNumber])
+  @@index([studentNumber])
+  @@index([normalizedName])
+  @@index([email])
+}
+
+model AcademicRecord {
+  id                    String       @id @default(uuid())
+  studentId             String
+  institutionId         String
+  degreeName            String
+  normalizedDegreeName  String
+  department            String
+  specialization        String?
+  passingYear           Int
+  academicStatus        String       @default("ACTIVE") // ACTIVE, COMPLETED, SUSPENDED
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  deletedAt             DateTime?    // Non-destructive soft-deletion
+
+  student               Student      @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  institution           Institution  @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  credentials           Credential[]
+
+  @@index([studentId])
+  @@index([institutionId, passingYear])
+  @@index([normalizedDegreeName])
+}
+
+model Credential {
+  id                      String           @id @default(uuid())
+  credentialId            String           @unique // e.g. VDX-2024-IITD-0891
+  studentId               String
+  academicRecordId        String?
+  institutionId           String
+  batchId                 String?
+  certificateNumber       String?
+  degreeName              String
+  department              String
+  graduationYear          Int
+  grade                   String
+  issueDate               DateTime
+  documentStorageKey      String
+  documentHash            String           // SHA-256 of the PDF
+  metadataHash            String           // SHA-256 of canonical metadata
+  issuerWallet            String
+  blockchainTxHash        String?
+  blockchainNetwork       String           @default("sepolia")
+  status                  CredentialStatus @default(PENDING)
+  canonicalRecordId       String?          // Pointer if duplicate linked
+  isCanonical             Boolean          @default(true)
+  revokedAt               DateTime?
+  revocationReason        String?
+  revocationTxHash        String?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+  deletedAt               DateTime?        // Non-destructive soft-deletion
+
+  student                 Student          @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  academicRecord          AcademicRecord?  @relation(fields: [academicRecordId], references: [id], onDelete: Restrict)
+  institution             Institution      @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  uploadBatch             UploadBatch?     @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  verificationLogs        VerificationLog[]
+
+  @@index([credentialId])
+  @@index([documentHash])
+  @@index([status])
+  @@index([studentId])
+  @@index([batchId])
+}
+
+model UploadBatch {
+  id                      String           @id @default(uuid())
+  institutionId           String
+  filename                String
+  fileStorageKey          String?
+  totalRecords            Int              @default(0)
+  processedRecords        Int              @default(0)
+  validRecords            Int              @default(0)
+  duplicateRecords        Int              @default(0)
+  conflictingRecords      Int              @default(0)
+  batchStatus             String           @default("PENDING") // PENDING, PROCESSING, VALIDATED, REVIEW_REQUIRED, COMPLETED, FAILED
+  uploadedBy              String
+  rawRecords              Json?
+  validationReport        Json?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  institution             Institution      @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  credentials             Credential[]
+  duplicateGroups         DuplicateGroup[]
+  auditLogs               AuditLog[]
+
+  @@index([institutionId])
+  @@index([batchStatus])
+  @@index([createdAt])
+}
+
+model DuplicateGroup {
+  id                      String           @id @default(uuid())
+  institutionId           String
+  batchId                 String?
+  canonicalRecordId       String?
+  matchedRecordIds        Json             // Array of candidate records and scores
+  matchType               String           // EXACT_DUPLICATE, POSSIBLE_SAME_STUDENT, IDENTITY_CONFLICT, DUPLICATE_DEGREE, DUPLICATE_CERTIFICATE_ID
+  confidenceScore         Float            // 0.0 to 1.0
+  detectionReason         String
+  aiExplanation           String?
+  reviewStatus            String           @default("PENDING") // PENDING, RESOLVED_MERGED, RESOLVED_SEPARATE, REJECTED, RESOLVED_CORRECTION
+  fieldDiffs              Json?            // Field level diff comparisons
+  resolvedBy              String?
+  resolvedAt              DateTime?
+  resolutionNotes         String?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  institution             Institution      @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  uploadBatch             UploadBatch?     @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([institutionId])
+  @@index([reviewStatus])
+  @@index([matchType])
+  @@index([batchId])
+}
+
+model VerificationLog {
+  id                  String       @id @default(uuid())
+  credentialId        String
+  verifierUserId      String?
+  verificationResult  String       // VERIFIED, REVOKED, INVALID, NOT_FOUND
+  verificationMethod  String       // QR_SCAN, MANUAL_ID, API
+  transactionHash     String?
+  verifiedAt          DateTime     @default(now())
+
+  credential          Credential   @relation(fields: [credentialId], references: [credentialId], onDelete: Cascade)
+  verifier            User?        @relation(fields: [verifierUserId], references: [id], onDelete: SetNull)
+
+  @@index([credentialId])
+  @@index([verifiedAt])
+}
+
+model WalletNonce {
+  id            String    @id @default(uuid())
+  walletAddress String
+  nonce         String    @unique
+  expiresAt     DateTime
+  usedAt        DateTime?
+
+  @@index([walletAddress, nonce])
+}
+
+model AuditLog {
+  id              String       @id @default(uuid())
+  batchId         String?
+  recordId        String?
+  action          String       // BATCH_UPLOADED, DUPLICATE_FLAGGED, RECORD_MERGED, STATUS_CHANGED, ISSUANCE_BLOCKED
+  previousValue   Json?
+  newValue        Json?
+  decisionReason  String?
+  performedBy     String
+  actorUserId     String?
+  timestamp       DateTime     @default(now())
+
+  actor           User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  uploadBatch     UploadBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([batchId])
+  @@index([recordId])
+  @@index([action])
+  @@index([timestamp])
+}
